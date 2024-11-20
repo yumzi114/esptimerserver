@@ -23,13 +23,17 @@ static TEMP_STACK_SIZE:usize = 2000;
 const WIFI_SSID:&'static str=env!("WIFI_SSID");
 const WIFI_PW:&'static str=env!("WIFI_PW");
 const SSD1306_ADDRESS: u8 = 0x3c;
-
-
+#[derive(Debug)]
+enum App_State{
+    NOMAR,
+    DETAILS
+}
 
 
 fn main()-> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     let peripherals = Peripherals::take()?;
+    let mut app_state = App_State::NOMAR;
     let sys_loop = EspSystemEventLoop::take()?;
     let delay: Delay = Default::default();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -41,11 +45,12 @@ fn main()-> anyhow::Result<()> {
     let buttom =PinDriver::input(peripherals.pins.gpio8).unwrap();
     let mut i2c_driver = I2cDriver::new(peripherals.i2c0, sda, scl, &i2c_conf)?;
     let interface = I2CDisplayInterface::new(i2c_driver);
-    let mut display = Ssd1306::new(
+    let mut display: Ssd1306<I2CInterface<I2cDriver>, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>> = Ssd1306::new(
         interface,
         DisplaySize128x64,
         DisplayRotation::Rotate0,
     ).into_buffered_graphics_mode();
+    
     display.init().unwrap();
     display.clear_buffer();
     let text_style = MonoTextStyleBuilder::new()
@@ -96,55 +101,64 @@ fn main()-> anyhow::Result<()> {
         ));
     // display.clear_buffer();
     let mem=time_mem.clone();
-    let job_thread = std::thread::Builder::new()
-        .stack_size(TEMP_STACK_SIZE)
-        .spawn(move||job_thread_fuction(
-            mem,
-        ));
+    // let job_thread = std::thread::Builder::new()
+    //     .stack_size(TEMP_STACK_SIZE)
+    //     .spawn(move||job_thread_fuction(
+    //         mem,
+    //     ));
     loop{
+        if buttom.is_low(){
+            app_state =App_State::DETAILS;
+        }else {
+            app_state =App_State::NOMAR;
+        }
         display.clear_buffer();
-        
-        
-        Text::with_baseline("Device Info", Point::zero(), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        Text::with_baseline("WIFI: ", Point::new(0, 20), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        Text::with_baseline("SERVER: ", Point::new(0, 40), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        if wifi_driver.is_connected().unwrap(){
-            Text::with_baseline("OK", Point::new(55, 20), text_style, Baseline::Top)
-                .draw(&mut display)
-                .unwrap();
-        }
-        if server_thread.is_ok(){
-            Text::with_baseline("OK", Point::new(70, 40), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        }
-        while buttom.is_low(){
-            
-            display.clear_buffer();
-            Text::with_baseline("SERVER IP", Point::new(0, 20), text_style, Baseline::Top)
-                .draw(&mut display)
-                .unwrap();
-            if wifi_driver.is_connected().unwrap(){
-                let netif =wifi_driver.sta_netif();
-                let ip_info =netif.get_ip_info().unwrap().ip.to_string();
-                Text::with_baseline(ip_info.as_str(), Point::new(0, 40), text_style, Baseline::Top)
+        match app_state {
+            App_State::NOMAR=>{
+                Text::with_baseline("Device Info", Point::zero(), text_style, Baseline::Top)
                     .draw(&mut display)
                     .unwrap();
+                Text::with_baseline("WIFI: ", Point::new(0, 20), text_style, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                Text::with_baseline("SERVER: ", Point::new(0, 40), text_style, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                if wifi_driver.is_connected().unwrap(){
+                    Text::with_baseline("OK", Point::new(55, 20), text_style, Baseline::Top)
+                        .draw(&mut display)
+                        .unwrap();
+                }
+                if server_thread.is_ok(){
+                    Text::with_baseline("OK", Point::new(70, 40), text_style, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                }
             }
-            
-            display.flush().unwrap();
+            App_State::DETAILS=>{
+                // display.clear_buffer();
+                Text::with_baseline("SERVER IP", Point::new(0, 20), text_style, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                if wifi_driver.is_connected().unwrap(){
+                    let netif =wifi_driver.sta_netif();
+                    let ip_info =netif.get_ip_info().unwrap().ip.to_string();
+                    Text::with_baseline(ip_info.as_str(), Point::new(0, 40), text_style, Baseline::Top)
+                        .draw(&mut display)
+                        .unwrap();
+                }
+            }
         }
+        
+        // while buttom.is_low(){
+            
+            
+        //     display.flush().unwrap();
+        // }
         display.flush().unwrap();
-        let st_now = SystemTime::now();
-        let dt_now_utc: DateTime<Utc> = st_now.clone().into();
-        let tz = dt_now_utc.with_timezone(&Seoul);
-        let formatted = format!("{}", tz.format("%H:%M"));
+        let mut buf = [0u8; 1024]; 
+        let nvs_time=time_mem.lock().unwrap().get_str("timedata", &mut buf).unwrap().unwrap_or(r#"{"cable1":"00:00","cable2":"00:00","cable3":"00:00","cable4":"00:00"}"#);
+        check_timer(nvs_time);
         // println!("{:?}",formatted);
         FreeRtos::delay_ms(1);
     }
@@ -184,39 +198,22 @@ fn webserver_thread_fuction(
     }
 }
 
-fn job_thread_fuction(
-    time_mem:Arc<Mutex<EspNvs<esp_idf_svc::nvs::NvsDefault>>>,
+fn check_timer(
+    nvs_data:&str,
 ){
-    loop{
-        let mut buf = [0u8; 1024]; 
-        // let st_now = SystemTime::now();
-        // let dt_now_utc: DateTime<Utc> = st_now.clone().into();
-        // let tz = dt_now_utc.with_timezone(&Seoul);
-        // let formatted = format!("{}", tz.format("%H:%M"));
-        // let time_data = time_mem.lock().unwrap().get_str("timedata", &mut buf).unwrap().unwrap_or(r#"{"cable1":"00:00","cable2":"00:00","cable3":"00:00","cable4":"00:00"}"#);
-        // let data = if time_data=="not found"{
-        //     r#"{"cable1":"00:00","cable2":"00:00","cable3":"00:00","cable4":"00:00"}"#
-        // } else{
-        //     time_data
-        // };
-        // let time_data = time_mem.lock().unwrap().get_str("timedata", &mut buf).unwrap().unwrap_or(r#"{"cable1":"00:00","cable2":"00:00","cable3":"00:00","cable4":"00:00"}"#);
-        // let parsed: Value = serde_json::from_str(time_data).expect("Failed to parse JSON");
-        // println!("JOB: {:?}", parsed);
-        if let std::result::Result::Ok(data)=time_mem.lock().unwrap().get_str("timedata", &mut buf){
-            if let Some(str)=data{
-                // let parsed: Value = serde_json::from_str(str).expect("Failed to parse JSON");
-                
-                // str.replace("\\", "");
-                
-                // let parsed: Value = serde_json::from_str(msg_data.as_str()).expect("Failed to parse JSON");
-                println!("JOB: {}", str);
+    let st_now = SystemTime::now();
+    let dt_now_utc: DateTime<Utc> = st_now.clone().into();
+    let tz = dt_now_utc.with_timezone(&Seoul);
+    let formatted = format!("{}", tz.format("%H:%M"));
+    let parsed: Value = serde_json::from_str(nvs_data).expect("Failed to parse JSON");
+    if let Value::Object(map) = parsed {
+        for (key, value) in map {
+            if formatted==value.to_string().replace('"', ""){
+                println!("{}",key);
             }
         }
-        // println!("{}", formatted);
-        FreeRtos::delay_ms(1000);
     }
 }
-
 
 fn index_html(
     time_data:&str
@@ -316,3 +313,4 @@ fn index_html(
     "#
         ,parsed.get("cable1").unwrap(),parsed.get("cable2").unwrap(),parsed.get("cable3").unwrap(),parsed.get("cable4").unwrap())
 }
+
