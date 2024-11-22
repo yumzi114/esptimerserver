@@ -9,7 +9,7 @@ use heapless::String;
 use esp_idf_svc::http::server::Configuration as ServerConf;
 use chrono_tz::Asia::Seoul;
 use embedded_graphics::{
-    mono_font::{ascii::FONT_10X20, MonoTextStyleBuilder},
+    mono_font::{ascii::{FONT_10X20, FONT_5X7, FONT_7X13, FONT_9X15, FONT_9X15_BOLD}, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Baseline, Text},
@@ -26,19 +26,20 @@ const SSD1306_ADDRESS: u8 = 0x3c;
 #[derive(Debug)]
 enum App_State{
     NOMAR,
-    DETAILS
+    DETAILS,
+    CABLESTATUS
 }
 
 
 fn main()-> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     let peripherals = Peripherals::take()?;
-    let mut app_state = App_State::NOMAR;
     let sys_loop = EspSystemEventLoop::take()?;
     let delay: Delay = Default::default();
     esp_idf_svc::log::EspLogger::initialize_default();
     let nvs = EspDefaultNvsPartition::take()?;
     let i2c_conf = I2cConfig::new().baudrate(100.kHz().into());
+    let mut app_state = App_State::NOMAR;
     // let i2c_conf =I2cConf::Config::new();
     let sda = peripherals.pins.gpio3;
     let scl = peripherals.pins.gpio2;
@@ -50,11 +51,20 @@ fn main()-> anyhow::Result<()> {
         DisplaySize128x64,
         DisplayRotation::Rotate0,
     ).into_buffered_graphics_mode();
-    
+    let mut cable1_pin = PinDriver::input_output(peripherals.pins.gpio18).unwrap();
+    let mut cable2_pin = PinDriver::input_output(peripherals.pins.gpio19).unwrap();
+    let mut cable3_pin = PinDriver::input_output(peripherals.pins.gpio6).unwrap();
+    cable1_pin.set_low().unwrap();
+    cable2_pin.set_low().unwrap();
+    cable3_pin.set_low().unwrap();
     display.init().unwrap();
     display.clear_buffer();
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
+        .text_color(BinaryColor::On)
+        .build();
+    let text_style2 = MonoTextStyleBuilder::new()
+        .font(&FONT_7X13)
         .text_color(BinaryColor::On)
         .build();
     Text::with_baseline("Device ", Point::new(0, 20), text_style, Baseline::Top)
@@ -106,16 +116,32 @@ fn main()-> anyhow::Result<()> {
     //     .spawn(move||job_thread_fuction(
     //         mem,
     //     ));
+    let mut flag = 0;
+    let mut flag_list = vec![false,false,false,false];
     loop{
+        
+        // if buttom.is_low(){
+        //     app_state =App_State::DETAILS;
+        // }else {
+        //     app_state =App_State::NOMAR;
+        // }
         if buttom.is_low(){
-            app_state =App_State::DETAILS;
-        }else {
-            app_state =App_State::NOMAR;
+            if flag==0{
+                flag=1;
+                match app_state {
+                    App_State::NOMAR=>app_state =App_State::DETAILS,
+                    App_State::DETAILS=>app_state =App_State::CABLESTATUS,
+                    App_State::CABLESTATUS=>app_state =App_State::NOMAR,
+                }
+                // flag=0;
+            }
+        }else{
+            flag=0;
         }
         display.clear_buffer();
         match app_state {
             App_State::NOMAR=>{
-                Text::with_baseline("Device Info", Point::zero(), text_style, Baseline::Top)
+                Text::with_baseline("Device Info", Point::new(0, 0), text_style, Baseline::Top)
                     .draw(&mut display)
                     .unwrap();
                 Text::with_baseline("WIFI: ", Point::new(0, 20), text_style, Baseline::Top)
@@ -147,6 +173,56 @@ fn main()-> anyhow::Result<()> {
                         .draw(&mut display)
                         .unwrap();
                 }
+            },
+            App_State::CABLESTATUS=>{
+                // display.clear_buffer();
+                Text::with_baseline("", Point::zero(), text_style2, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                Text::with_baseline("C1:", Point::new(0, 13), text_style2, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                Text::with_baseline("C2:", Point::new(70, 13), text_style2, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                Text::with_baseline("C3:", Point::new(0, 39), text_style2, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                Text::with_baseline("C4:", Point::new(70, 39), text_style2, Baseline::Top)
+                    .draw(&mut display)
+                    .unwrap();
+                let mut buf = [0u8; 1024]; 
+                let nvs_time=time_mem.lock().unwrap().get_str("timedata", &mut buf).unwrap().unwrap_or(r#"{"cable1":"00:00","cable2":"00:00","cable3":"00:00","cable4":"00:00"}"#);
+                let parsed: Value = serde_json::from_str(nvs_time).expect("Failed to parse JSON");
+                if let Value::Object(map) = parsed {
+                    for (key, value) in map {
+                        match key.as_str() {
+                            "cable1" =>{
+                                Text::with_baseline(value.as_str().unwrap(), Point::new(20, 13), text_style2, Baseline::Top)
+                                    .draw(&mut display)
+                                    .unwrap();
+                            },
+                            "cable2" =>{
+                                Text::with_baseline(value.as_str().unwrap(), Point::new(90, 13), text_style2, Baseline::Top)
+                                    .draw(&mut display)
+                                    .unwrap();
+                            }
+                            "cable3"=>{
+                                Text::with_baseline(value.as_str().unwrap(), Point::new(20, 39), text_style2, Baseline::Top)
+                                    .draw(&mut display)
+                                    .unwrap();
+                            },
+                            "cable4"=>{
+                                Text::with_baseline(value.as_str().unwrap(), Point::new(90, 39), text_style2, Baseline::Top)
+                                    .draw(&mut display)
+                                    .unwrap();
+                            },
+                            _=>{}
+                        }
+                    }
+                };
+                
+                
             }
         }
         
@@ -158,7 +234,7 @@ fn main()-> anyhow::Result<()> {
         display.flush().unwrap();
         let mut buf = [0u8; 1024]; 
         let nvs_time=time_mem.lock().unwrap().get_str("timedata", &mut buf).unwrap().unwrap_or(r#"{"cable1":"00:00","cable2":"00:00","cable3":"00:00","cable4":"00:00"}"#);
-        check_timer(nvs_time);
+        check_timer(nvs_time,&mut flag_list,&mut cable1_pin,&mut cable2_pin,&mut cable3_pin);
         // println!("{:?}",formatted);
         FreeRtos::delay_ms(1);
     }
@@ -200,6 +276,10 @@ fn webserver_thread_fuction(
 
 fn check_timer(
     nvs_data:&str,
+    flag_list:&mut Vec<bool>,
+    cable1:&mut PinDriver<esp_idf_hal::gpio::Gpio18, esp_idf_hal::gpio::InputOutput>,
+    cable2:&mut PinDriver<esp_idf_hal::gpio::Gpio19, esp_idf_hal::gpio::InputOutput>,
+    cable3:&mut PinDriver<esp_idf_hal::gpio::Gpio6, esp_idf_hal::gpio::InputOutput>,
 ){
     let st_now = SystemTime::now();
     let dt_now_utc: DateTime<Utc> = st_now.clone().into();
@@ -209,7 +289,53 @@ fn check_timer(
     if let Value::Object(map) = parsed {
         for (key, value) in map {
             if formatted==value.to_string().replace('"', ""){
-                println!("{}",key);
+                match key.as_str() {
+                    "cable1"=>{
+                        if !flag_list[0]{
+                            if cable1.is_low(){
+                                cable1.set_high().unwrap();
+                                FreeRtos::delay_ms(1000);
+                                cable1.set_low().unwrap();
+                                flag_list[0]=true;
+                                continue;
+                            }
+                        }
+                    },
+                    "cable2"=>{
+                        if !flag_list[1]{
+                            if cable2.is_low(){
+                                cable2.set_high().unwrap();
+                                FreeRtos::delay_ms(1000);
+                                cable2.set_low().unwrap();
+                                flag_list[1]=true;
+                                continue;
+                            }
+                        }
+                    },
+                    "cable3"=>{
+                        if !flag_list[2]{
+                            if cable3.is_low(){
+                                cable3.set_high().unwrap();
+                                FreeRtos::delay_ms(1000);
+                                cable3.set_low().unwrap();
+                                flag_list[2]=true;
+                                continue;
+                            }
+                        }
+                    },
+                    "cable4"=>{
+                        if !flag_list[3]{
+                            
+                        }
+                    },
+                    _=>{
+
+                    }
+                }
+            }else{
+                let num = key.replace("cable", "");
+                let num = usize::from_str(num.as_str()).unwrap()-1;
+                flag_list[num]=false;
             }
         }
     }
